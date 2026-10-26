@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Колесо фортуны</title>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:var(--tg-theme-bg-color,#fff);--tx:var(--tg-theme-text-color,#1b1b1f);--hint:var(--tg-theme-hint-color,#7a7a85);--sec:var(--tg-theme-secondary-bg-color,#f2f2f5);--link:var(--tg-theme-link-color,#c71f15)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 Rubik,system-ui,-apple-system,"Segoe UI",sans-serif;padding:10px 16px calc(24px + env(safe-area-inset-bottom,0px))}
+.wrap{max-width:460px;margin:0 auto}
+.stage{width:min(92vw,400px);aspect-ratio:1;margin:0 auto 4px}
+canvas{width:100%;height:100%;display:block;cursor:pointer;touch-action:manipulation}
+.res{min-height:68px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;margin-bottom:6px}
+.res small{color:var(--hint);font-size:13px;min-height:18px}
+.res b{font-size:30px;font-weight:700;line-height:1.15;word-break:break-word}
+button{font:inherit;border:0;border-radius:12px;padding:11px 14px;background:var(--sec);color:var(--tx);cursor:pointer}
+.spin{width:100%;border-radius:16px;padding:15px;font-size:19px;font-weight:700;color:#fff;background:linear-gradient(#ea3b2f,#c71f15);box-shadow:0 4px 0 #8d140d,0 10px 18px rgba(199,31,21,.28);transition:transform .08s,box-shadow .08s}
+.spin:active:not(:disabled){transform:translateY(3px);box-shadow:0 1px 0 #8d140d}
+.spin:disabled{opacity:.45}
+.row{display:flex;gap:8px;margin:20px 0 4px}
+.row input{flex:1;min-width:0;font:inherit;padding:11px 13px;border-radius:12px;border:1px solid transparent;background:var(--sec);color:var(--tx)}
+.row input:focus{outline:2px solid #e8a91a;outline-offset:0}
+.row button{background:#e8a91a;color:#2b1a00;font-weight:500}
+.hd{display:flex;justify-content:space-between;align-items:baseline;margin:16px 0 8px;font-weight:500}
+.hd span+span{color:var(--link);font-size:14px;font-weight:400;cursor:pointer}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:7px;background:var(--sec);border-radius:999px;padding:5px 11px;font-size:14px}
+.chip i{width:11px;height:11px;border-radius:50%;border:1px solid rgba(0,0,0,.25)}
+.chip b{cursor:pointer;color:var(--hint);font-size:17px;line-height:1;font-weight:400}
+.presets{display:flex;gap:6px;overflow-x:auto;margin:16px -16px 4px;padding:0 16px 4px;scrollbar-width:none}
+.presets button{white-space:nowrap;font-size:14px;padding:8px 13px}
+label{display:flex;align-items:center;gap:10px;font-size:15px;margin:10px 0}
+input[type=checkbox]{accent-color:#c71f15;width:18px;height:18px}
+#send{width:100%;margin-top:10px;background:#e8a91a;color:#2b1a00;font-weight:500}
+.hist{color:var(--hint);font-size:14px;margin-top:14px}
+</style></head>
+<body><div class="wrap">
+<div class="stage"><canvas id="wheel"></canvas></div>
+<div class="res"><small id="rl"></small><b id="rv"></b></div>
+<button class="spin" id="spin">Крутить</button>
+<div class="row"><input id="inp" placeholder="Слово, число, диапазон 1-20 или список через запятую" enterkeyhint="done"><button id="add">Добавить</button></div>
+<div class="hd"><span id="cnt">Варианты</span><span id="clr">Очистить</span></div>
+<div class="chips" id="chips"></div>
+<div class="presets">
+<button data-p="yn">Да / Нет</button><button data-p="ht">Орёл / Решка</button><button data-p="n10">Числа 1–10</button><button data-p="d6">Кубик</button><button id="shuf">Перемешать</button>
+</div>
+<label><input type="checkbox" id="elim"> Выбывание: убирать выпавший вариант</label>
+<label><input type="checkbox" id="snd" checked> Звук</label>
+<button id="send" hidden>Отправить результат в чат</button>
+<div class="hist" id="hist"></div>
+</div>
+<script>
+const tg=window.Telegram&&Telegram.WebApp;
+if(tg){tg.ready();tg.expand();}
+const $=id=>document.getElementById(id);
+const TAU=Math.PI*2,RED='#D9261C',CREAM='#F6D77A',FONT='Rubik,system-ui,sans-serif';
+const cv=$('wheel'),ctx=cv.getContext('2d');
+let items=[],angle=0,spinning=false,history=[],lastWinner=null,hl=null,kick=0,ac=null;
+const store={get(k){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+const PRESETS={yn:['Да','Нет'],ht:['Орёл','Решка'],n10:Array.from({length:10},(_,i)=>String(i+1)),d6:['1','2','3','4','5','6']};
+
+function parse(text){
+  const m=text.trim().match(/^(-?\d+)\s*(?:-|–|—|\.\.)\s*(\d+)$/);
+  if(m){let a=+m[1],b=+m[2];if(a>b)[a,b]=[b,a];b=Math.min(b,a+59);return Array.from({length:b-a+1},(_,i)=>String(a+i));}
+  return text.split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean);
+}
+// красно-белые секторы; при нечётном числе последний — золотистый, чтобы цвета не совпали
+function colorOf(i){const n=items.length;if(n>1&&n%2===1&&i===n-1)return CREAM;return i%2?'#FFFFFF':RED;}
+function pick(){const n=items.length,rel=((-Math.PI/2-angle)%TAU+TAU)%TAU;return Math.floor(rel/(TAU/n))%n;}
+const css=v=>getComputedStyle(document.body).getPropertyValue(v).trim();
+
+function draw(){
+  const dpr=window.devicePixelRatio||1,s=cv.clientWidth;
+  if(!s)return;
+  if(cv.width!==Math.round(s*dpr))cv.width=cv.height=Math.round(s*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,s,s);
+  const c=s/2,R=c*0.92,rim=R*0.1,r=R-rim,n=items.length,arc=TAU/(n||1);
+  const seg=(i)=>{const a0=angle+i*arc;ctx.beginPath();ctx.moveTo(c,c);ctx.arc(c,c,r,a0,a0+arc);ctx.closePath();};
+  // золотой обод
+  ctx.save();ctx.shadowColor='rgba(0,0,0,.3)';ctx.shadowBlur=14;ctx.shadowOffsetY=5;
+  const g=ctx.createLinearGradient(c-R,c-R,c+R,c+R);
+  [[0,'#fbe38a'],[.3,'#e6a817'],[.5,'#fdeea6'],[.75,'#d99a12'],[1,'#f5cf5c']].forEach(([o,k])=>g.addColorStop(o,k));
+  ctx.beginPath();ctx.arc(c,c,R,0,TAU);ctx.fillStyle=g;ctx.fill();ctx.restore();
+  ctx.beginPath();ctx.arc(c,c,r+1,0,TAU);ctx.strokeStyle='rgba(120,70,0,.45)';ctx.lineWidth=2;ctx.stroke();
+  // секторы
+  ctx.save();ctx.beginPath();ctx.arc(c,c,r,0,TAU);ctx.clip();
+  if(!n){
+    ctx.fillStyle=css('--sec')||'#eee';ctx.fillRect(0,0,s,s);
+    ctx.fillStyle=css('--hint')||'#777';ctx.font='500 17px '+FONT;ctx.textAlign='center';ctx.fillText('Добавьте варианты',c,c+6);
+  }else{
+    for(let i=0;i<n;i++){seg(i);ctx.fillStyle=colorOf(i);ctx.fill();}
+    const fs=Math.max(10,Math.min(R*0.12,r*0.8*arc*0.45)),maxW=r*0.66;
+    for(let i=0;i<n;i++){
+      ctx.save();ctx.translate(c,c);ctx.rotate(angle+i*arc+arc/2);
+      ctx.font='700 '+fs+'px '+FONT;ctx.textAlign='right';ctx.textBaseline='middle';
+      ctx.fillStyle=colorOf(i)===RED?'#fff':'#7d1510';
+      let t=items[i],cut=false;
+      while(t.length>1&&ctx.measureText(t+(cut?'…':'')).width>maxW){t=t.slice(0,-1);cut=true;}
+      ctx.fillText(t+(cut?'…':''),r-R*0.06,0);ctx.restore();
+    }
+    if(hl!==null&&!spinning){
+      for(let i=0;i<n;i++)if(i!==hl){seg(i);ctx.fillStyle='rgba(0,0,0,.42)';ctx.fill();}
+      seg(hl);ctx.lineWidth=5;ctx.strokeStyle='#fff3b0';ctx.stroke();
+    }
+  }
+  const sh=ctx.createRadialGradient(c,c,r*0.55,c,c,r);sh.addColorStop(0,'rgba(0,0,0,0)');sh.addColorStop(1,'rgba(0,0,0,.22)');
+  ctx.fillStyle=sh;ctx.fillRect(0,0,s,s);ctx.restore();
+  // лампочки на ободе
+  const m=24,t=Math.floor(performance.now()/130);
+  for(let k=0;k<m;k++){
+    const a=k/m*TAU,on=spinning?(k+t)%2===0:k%2===0;
+    ctx.beginPath();ctx.arc(c+Math.cos(a)*(r+rim/2),c+Math.sin(a)*(r+rim/2),rim*0.2,0,TAU);
+    ctx.fillStyle=on?'#fffbe6':'#b97a0a';ctx.fill();
+  }
+  // золотая втулка
+  const hg=ctx.createRadialGradient(c-r*.03,c-r*.03,1,c,c,r*.11);
+  hg.addColorStop(0,'#fff3b8');hg.addColorStop(.6,'#e6a817');hg.addColorStop(1,'#b97a0a');
+  ctx.save();ctx.shadowColor='rgba(0,0,0,.4)';ctx.shadowBlur=8;ctx.beginPath();ctx.arc(c,c,r*.11,0,TAU);ctx.fillStyle=hg;ctx.fill();ctx.restore();
+  // указатель-капля (качается от «штырьков»)
+  ctx.save();ctx.translate(c,c-R+rim*0.2);ctx.rotate(kick);
+  ctx.shadowColor='rgba(0,0,0,.4)';ctx.shadowBlur=6;ctx.shadowOffsetY=2;
+  const pg=ctx.createLinearGradient(-rim,-rim,rim,rim*2);pg.addColorStop(0,'#fdeea6');pg.addColorStop(.5,'#e6a817');pg.addColorStop(1,'#c98a0e');
+  ctx.beginPath();ctx.moveTo(0,rim*2.1);
+  ctx.bezierCurveTo(-rim*.5,rim*1.3,-rim*.95,rim*.7,-rim*.95,0);
+  ctx.arc(0,0,rim*.95,Math.PI,TAU);
+  ctx.bezierCurveTo(rim*.95,rim*.7,rim*.5,rim*1.3,0,rim*2.1);
+  ctx.closePath();ctx.fillStyle=pg;ctx.fill();ctx.restore();
+}
+
+function render(){
+  const ch=$('chips');ch.textContent='';
+  items.forEach((t,i)=>{
+    const d=document.createElement('span');d.className='chip';
+    const dot=document.createElement('i');dot.style.background=colorOf(i);
+    const s=document.createElement('span');s.textContent=t;
+    const x=document.createElement('b');x.textContent='×';
+    x.onclick=()=>{if(!spinning){items.splice(i,1);changed();}};
+    d.append(dot,s,x);ch.append(d);
+  });
+  $('cnt').textContent='Варианты ('+items.length+')';
+  $('spin').disabled=spinning||items.length<2;
+  $('hist').textContent=history.length?'Последние результаты: '+history.slice(0,8).join(', '):'';
+  draw();
+}
+function changed(){hl=null;store.set('items',items);render();}
+function setItems(l){if(spinning)return;items=l.slice(0,60);$('rl').textContent=$('rv').textContent='';changed();}
+
+function beep(){
+  if(!$('snd').checked)return;
+  try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+    const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=880;g.gain.value=.04;
+    o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+.03);}catch(e){}
+}
+function tick(){kick=-0.42;beep();try{tg&&tg.HapticFeedback.selectionChanged();}catch(e){}}
+
+function spin(){
+  if(spinning||items.length<2)return;
+  spinning=true;hl=null;$('rl').textContent=$('rv').textContent='';$('send').hidden=true;render();
+  const start=angle,total=TAU*(5+Math.random()*3)+Math.random()*TAU,dur=4200+Math.random()*1800,t0=performance.now();
+  let last=pick();
+  (function f(t){
+    const p=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-p,4);
+    angle=start+total*e;kick*=0.82;draw();
+    const i=pick();if(i!==last){last=i;tick();}
+    if(p<1)requestAnimationFrame(f);else done();
+  })(t0);
+}
+function done(){
+  spinning=false;kick=0;angle%=TAU;
+  const w=items[pick()];lastWinner=w;hl=pick();
+  $('rl').textContent='Выпало';$('rv').textContent=w;
+  history.unshift(w);history=history.slice(0,10);store.set('hist',history);
+  try{tg&&tg.HapticFeedback.notificationOccurred('success');}catch(e){}
+  $('send').hidden=!tg;
+  if($('elim').checked){setTimeout(()=>{if(spinning)return;const i=items.indexOf(w);if(i>-1){items.splice(i,1);changed();}},1600);}
+  render();
+}
+
+$('spin').onclick=spin;cv.onclick=spin;
+$('add').onclick=()=>{if(spinning)return;const l=parse($('inp').value);if(l.length){items=items.concat(l).slice(0,60);$('inp').value='';changed();}};
+$('inp').addEventListener('keydown',e=>{if(e.key==='Enter')$('add').click();});
+document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>setItems(PRESETS[b.dataset.p]));
+$('shuf').onclick=()=>{if(spinning)return;for(let i=items.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[items[i],items[j]]=[items[j],items[i]];}changed();};
+$('clr').onclick=()=>setItems([]);
+$('send').onclick=()=>{try{tg.sendData(JSON.stringify({winner:lastWinner,items}));}catch(e){}};
+window.addEventListener('resize',draw);
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(draw);
+
+try{const q=new URLSearchParams(location.search).get('items');if(q){const a=JSON.parse(q);if(Array.isArray(a))items=a.map(String).slice(0,60);}}catch(e){}
+if(!items.length)items=store.get('items')||[];
+history=store.get('hist')||[];
+render();
+</script></body></html>
